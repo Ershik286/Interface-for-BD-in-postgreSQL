@@ -1,0 +1,38 @@
+{
+  "columns": {
+    "id": "Идентификатор",
+    "name": "Название",
+    "description": "Описание",
+    "price": "Цена",
+    "category_id": "id Категории",
+    "component_id": "id компонента",
+    "power_consumption": "потреб. мощность",
+    "specs": "спец символы",
+    "config_id": "id конфигурации",
+    "quantity": "Количество",
+    "user_id": "id пользователя",
+    "title": "титул",
+    "total_price": "максимальная цена",
+    "total_power": "максимальная мощность",
+    "created_at": "Создано: ",
+    "change_datetime": "Дата и время изменения",
+    "old_value": "старая цена",
+    "new_value": "новая цена",
+    "parametr_name": "Название параметра",
+    "value": "цена",
+    "record_id": "Пиковый id",
+    "username": "Имя пользователя",
+    "email": "Почта"
+  },
+  "tables": {
+    "users": "Пользователи",
+    "products": "Товары",
+    "orders": "Заказы",
+    "categories": "Категории",
+    "components": "Компоненты",
+    "config_components": "Конфигурации компонентов",
+    "configurations": "Конфигурация",
+    "log_components": "Логи изменений компонентов",
+    "statisticscomponents": "Статистика Компонентов"
+  }
+}
