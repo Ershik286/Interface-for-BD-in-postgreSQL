@@ -1,12 +1,19 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Drawing;
 using System.Windows.Forms;
 using Npgsql;
 using System.Data;
+using System.IO;
+using System.Text.Json;
+using System.Linq;
 
 namespace lab4BD
 {
+    // Класс для хранения переводов из JSON
+    public class TranslationData
+    {
+        public Dictionary<string, string> Columns { get; set; } = new Dictionary<string, string>();
+        public Dictionary<string, string> Tables { get; set; } = new Dictionary<string, string>();
+    }
+
     public class stringGrid
     {
         public DataGridView dataGrid;
@@ -158,6 +165,15 @@ namespace lab4BD
                     {
                         if (!IsRowEmpty(rowData))
                         {
+                            // Проверка на дубликаты перед сохранением
+                            if (CheckForDuplicate(tableName, rowData, connection))
+                            {
+                                MessageBox.Show($"Обнаружена дублирующаяся запись. Пропуск строки: {string.Join(", ", rowData)}",
+                                              "Дублирующаяся запись",
+                                              MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                continue;
+                            }
+
                             string insertSql = $"INSERT INTO {tableName} VALUES (";
                             for (int col = 0; col < columnCount; col++)
                             {
@@ -189,21 +205,76 @@ namespace lab4BD
                                "Ошибка сохранения",
                                MessageBoxButtons.OK, MessageBoxIcon.Error);
 
-                // Перезагрузка БД на случай ошибки
                 parentsTable.ReloadTableData();
             }
         }
 
-        // Метод для получения типов столбцов
+        // Проверка на дубликаты
+        private bool CheckForDuplicate(string tableName, string[] rowData, NpgsqlConnection connection)
+        {
+            try
+            {
+                // Получаем названия столбцов
+                var columnNames = GetColumnNames(tableName, connection);
+
+                // Строим условие для проверки дубликатов
+                string whereClause = "";
+                for (int i = 0; i < columnNames.Count; i++)
+                {
+                    if (i > 0) whereClause += " AND ";
+                    whereClause += $"{columnNames[i]} = @param{i}";
+                }
+
+                string checkSql = $"SELECT COUNT(*) FROM {tableName} WHERE {whereClause}";
+                using (var command = new NpgsqlCommand(checkSql, connection))
+                {
+                    for (int i = 0; i < rowData.Length; i++)
+                    {
+                        command.Parameters.AddWithValue($"@param{i}", rowData[i] ?? (object)DBNull.Value);
+                    }
+
+                    long count = (long)command.ExecuteScalar();
+                    return count > 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ошибка при проверке дубликатов: {ex.Message}");
+                return false;
+            }
+        }
+
+        private List<string> GetColumnNames(string tableName, NpgsqlConnection connection)
+        {
+            var columnNames = new List<string>();
+
+            string sql = $@"
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = '{tableName}' 
+                ORDER BY ordinal_position";
+
+            using (var command = new NpgsqlCommand(sql, connection))
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    columnNames.Add(reader.GetString(0));
+                }
+            }
+
+            return columnNames;
+        }
+
         private Dictionary<string, string> GetColumnTypes(string tableName, NpgsqlConnection connection)
         {
             var columnTypes = new Dictionary<string, string>();
 
             string sql = $@"
-        SELECT column_name, data_type 
-        FROM information_schema.columns 
-        WHERE table_name = '{tableName}' 
-        ORDER BY ordinal_position";
+                SELECT column_name, data_type 
+                FROM information_schema.columns 
+                WHERE table_name = '{tableName}' 
+                ORDER BY ordinal_position";
 
             using (var command = new NpgsqlCommand(sql, connection))
             using (var reader = command.ExecuteReader())
@@ -213,7 +284,7 @@ namespace lab4BD
                 {
                     string columnName = reader.GetString(0);
                     string dataType = reader.GetString(1);
-                    columnTypes[index.ToString()] = dataType; // Используем индекс как ключ
+                    columnTypes[index.ToString()] = dataType;
                     index++;
                 }
             }
@@ -221,7 +292,6 @@ namespace lab4BD
             return columnTypes;
         }
 
-        // Метод для форматирования значений в зависимости от типа столбца
         private string FormatValueForSql(string value, string dataType)
         {
             if (string.IsNullOrWhiteSpace(value))
@@ -274,6 +344,7 @@ namespace lab4BD
             dataGrid.Rows.Clear();
             dataRows.Clear();
         }
+
         public int GetRowCount()
         {
             return dataRows.Count;
@@ -285,8 +356,11 @@ namespace lab4BD
         public string nameTable { get; private set; }
         private int column = 0;
         private List<string> nameColumns;
+        private List<string> originalColumnNames; // Оригинальные названия столбцов из БД
+        private Dictionary<string, string> columnDataTypes; // Типы данных столбцов
         public Form1 parentForm;
         private stringGrid gridView;
+        private TranslationData translations;
 
         private Label mainLabel;
         private Label settingsSelect;
@@ -309,11 +383,17 @@ namespace lab4BD
             this.nameTable = nameTable;
             this.column = col > 0 ? col : 1;
             this.nameColumns = new List<string>(column);
+            this.originalColumnNames = new List<string>(column);
+            this.columnDataTypes = new Dictionary<string, string>();
             this.parentForm = form;
+            this.translations = LoadTranslations();
 
             for (int i = 0; i < column; i++)
             {
-                nameColumns.Add($"Column_{i + 1}");
+                string columnName = $"Поле_{i + 1}";
+                nameColumns.Add(columnName);
+                originalColumnNames.Add(columnName);
+                columnDataTypes[columnName] = "text"; // По умолчанию текст
             }
 
             CreateInterface();
@@ -324,9 +404,97 @@ namespace lab4BD
         {
             this.nameTable = tableName;
             this.parentForm = form;
+            this.translations = LoadTranslations();
+            this.originalColumnNames = new List<string>();
+            this.columnDataTypes = new Dictionary<string, string>();
             LoadTableStructureFromDatabase();
             CreateInterface();
             LoadDataFromDatabase();
+        }
+
+        public string GetTranslatedTableName()
+        {
+            if (translations.Tables != null && translations.Tables.ContainsKey(nameTable.ToLower()))
+            {
+                return translations.Tables[nameTable.ToLower()];
+            }
+            return FormatTableName(nameTable);
+        }
+
+        private TranslationData LoadTranslations()
+        {
+            var translationData = new TranslationData();
+
+            try
+            {
+                if (File.Exists("translations.json"))
+                {
+                    string json = File.ReadAllText("translations.json");
+
+                    var options = new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true,
+                        ReadCommentHandling = JsonCommentHandling.Skip,
+                        AllowTrailingCommas = true
+                    };
+
+                    translationData = JsonSerializer.Deserialize<TranslationData>(json, options);
+
+                    if (translationData == null)
+                    {
+                        translationData = new TranslationData();
+                    }
+                }
+                else
+                {
+                    translationData = new TranslationData();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ошибка загрузки переводов: {ex.Message}");
+                translationData = new TranslationData();
+            }
+
+            return translationData;
+        }
+
+        private string TranslateColumnName(string originalName)
+        {
+            if (translations.Columns != null && translations.Columns.ContainsKey(originalName.ToLower()))
+            {
+                return translations.Columns[originalName.ToLower()];
+            }
+            return FormatColumnName(originalName);
+        }
+
+        private string TranslateTableName(string originalName)
+        {
+            if (translations.Tables != null && translations.Tables.ContainsKey(originalName.ToLower()))
+            {
+                return translations.Tables[originalName.ToLower()];
+            }
+            return FormatTableName(originalName);
+        }
+
+        private string FormatColumnName(string name)
+        {
+            name = name.Replace('_', ' ');
+            if (name.Length > 0)
+            {
+                name = char.ToUpper(name[0]) + name.Substring(1).ToLower();
+            }
+            return name;
+        }
+
+        private string FormatTableName(string name)
+        {
+            name = name.Replace('_', ' ');
+            if (name.Length > 0)
+            {
+                name = char.ToUpper(name[0]) + name.Substring(1).ToLower();
+            }
+            return name;
         }
 
         private void LoadTableStructureFromDatabase()
@@ -338,18 +506,27 @@ namespace lab4BD
                     connection.Open();
 
                     string sql = $@"
-                        SELECT column_name 
+                        SELECT column_name, data_type 
                         FROM information_schema.columns 
                         WHERE table_name = '{nameTable}' 
                         ORDER BY ordinal_position";
 
                     nameColumns = new List<string>();
+                    originalColumnNames = new List<string>();
+                    columnDataTypes = new Dictionary<string, string>();
+
                     using (var command = new NpgsqlCommand(sql, connection))
                     using (var reader = command.ExecuteReader())
                     {
                         while (reader.Read())
                         {
-                            nameColumns.Add(reader.GetString(0));
+                            string originalName = reader.GetString(0);
+                            string dataType = reader.GetString(1);
+
+                            originalColumnNames.Add(originalName);
+                            string translatedName = TranslateColumnName(originalName);
+                            nameColumns.Add(translatedName);
+                            columnDataTypes[translatedName] = dataType;
                         }
                     }
 
@@ -360,6 +537,63 @@ namespace lab4BD
             {
                 MessageBox.Show($"Ошибка загрузки структуры таблицы: {ex.Message}");
             }
+        }
+
+        // Проверка корректности данных для числовых полей
+        private bool ValidateNumericInput(string value, string dataType)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return true;
+
+            if (dataType == "numeric" || dataType == "decimal" ||
+                dataType == "real" || dataType == "double precision" ||
+                dataType == "integer" || dataType == "bigint" ||
+                dataType == "smallint")
+            {
+                // Заменяем запятую на точку для корректного парсинга
+                string normalizedValue = value.Replace(",", ".");
+
+                if (dataType == "integer" || dataType == "bigint" || dataType == "smallint")
+                {
+                    return int.TryParse(normalizedValue, out _);
+                }
+                else
+                {
+                    return decimal.TryParse(normalizedValue, System.Globalization.NumberStyles.Any,
+                        System.Globalization.CultureInfo.InvariantCulture, out _);
+                }
+            }
+
+            return true; // Для нечисловых типов проверка не требуется
+        }
+
+        // Проверка на дубликаты при добавлении
+        private bool CheckForDuplicateInGrid(string[] newRowData)
+        {
+            foreach (var existingRow in gridView.dataGrid.Rows)
+            {
+                if (existingRow is DataGridViewRow row && !row.IsNewRow)
+                {
+                    bool isDuplicate = true;
+                    for (int i = 0; i < column; i++)
+                    {
+                        string existingValue = row.Cells[i].Value?.ToString() ?? "";
+                        string newValue = newRowData[i] ?? "";
+
+                        if (existingValue != newValue)
+                        {
+                            isDuplicate = false;
+                            break;
+                        }
+                    }
+
+                    if (isDuplicate)
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         private void CreateTableInDatabase()
@@ -376,7 +610,7 @@ namespace lab4BD
 
                     for (int i = 0; i < column; i++)
                     {
-                        createSql += $", {nameColumns[i]} TEXT";
+                        createSql += $", {originalColumnNames[i]} TEXT";
                     }
                     createSql += ")";
 
@@ -394,8 +628,11 @@ namespace lab4BD
 
         public void CreateInterface()
         {
+            // Переводим название таблицы для интерфейса
+            string translatedTableName = TranslateTableName(nameTable);
+
             mainLabel = new Label();
-            mainLabel.Text = "Таблица: \"" + nameTable + "\"";
+            mainLabel.Text = $"Таблица: \"{translatedTableName}\"";
             mainLabel.Font = new Font("Arial", 12, FontStyle.Bold);
             mainLabel.AutoSize = true;
             mainLabel.Location = new Point(80, 45);
@@ -430,7 +667,7 @@ namespace lab4BD
             for (int i = 0; i < column; i++)
             {
                 Label label = new Label();
-                label.Text = nameColumns[i];
+                label.Text = nameColumns[i]; // Уже переведенные названия
                 label.Size = new Size(labelWidth, labelHeight);
                 label.Location = new Point(startX + i * (labelWidth), startY);
                 label.Font = new Font("Arial", 9);
@@ -447,7 +684,7 @@ namespace lab4BD
                 parentForm.Controls.Add(textBox);
 
                 Label labelAppend = new Label();
-                labelAppend.Text = nameColumns[i];
+                labelAppend.Text = nameColumns[i]; // Уже переведенные названия
                 labelAppend.Size = new Size(labelWidth, labelHeight);
                 labelAppend.Location = new Point(startX + i * (labelWidth), startY + 410);
                 labelAppend.Font = new Font("Arial", 9);
@@ -463,6 +700,7 @@ namespace lab4BD
                 parentForm.Controls.Add(textBoxAppend);
             }
 
+            // ... остальной код CreateInterface без изменений ...
             saveButton = new Button();
             saveButton.Size = new Size(120, 30);
             saveButton.Text = "Применить фильтр";
@@ -531,6 +769,7 @@ namespace lab4BD
             reloadButton.Click += (s, e) => ReloadTableData();
         }
 
+        // ... остальные методы Table без изменений ...
         private void DeleteRow_Click(object sender, EventArgs e)
         {
             gridView.deleteRows();
@@ -540,26 +779,67 @@ namespace lab4BD
         {
             string[] rowData = new string[column];
             bool hasData = false;
+            bool validationFailed = false;
+            string errorMessage = "";
 
+            // Проверяем данные перед добавлением
             for (int i = 0; i < column; i++)
             {
-                rowData[i] = textBoxesAppend[i].Text;
-                if (!string.IsNullOrWhiteSpace(rowData[i]))
+                string inputValue = textBoxesAppend[i].Text;
+                rowData[i] = inputValue;
+
+                if (!string.IsNullOrWhiteSpace(inputValue))
                     hasData = true;
+
+                // Получаем тип данных для текущего столбца
+                string columnName = nameColumns[i];
+                if (columnDataTypes.ContainsKey(columnName))
+                {
+                    string dataType = columnDataTypes[columnName];
+
+                    // Проверяем корректность данных для числовых полей
+                    if (!ValidateNumericInput(inputValue, dataType))
+                    {
+                        validationFailed = true;
+                        errorMessage += $"Столбец '{columnName}': ожидается числовое значение\n";
+                    }
+                }
+            }
+
+            if (!hasData)
+            {
+                MessageBox.Show("Введите данные для добавления");
+                return;
+            }
+
+            if (validationFailed)
+            {
+                MessageBox.Show($"Ошибка проверки данных:\n{errorMessage}",
+                               "Некорректные данные",
+                               MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            // Проверяем на дубликаты в таблице
+            if (CheckForDuplicateInGrid(rowData))
+            {
+                MessageBox.Show("Такая запись уже существует в таблице!",
+                               "Дублирующаяся запись",
+                               MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Если все проверки пройдены, добавляем запись
+            gridView.AddRows(rowData);
+
+            // Очищаем поля ввода после успешного добавления
+            for (int i = 0; i < column; i++)
+            {
                 textBoxesAppend[i].Clear();
             }
 
-            if (hasData)
-            {
-                gridView.AddRows(rowData);
-                MessageBox.Show("Запись добавлена в интерфейс.");
-            }
-            else
-            {
-                MessageBox.Show("Введите данные для добавления");
-            }
+            MessageBox.Show("Запись добавлена в интерфейс.");
         }
-
         private void SaveButton_Click(object sender, EventArgs e)
         {
             ApplyFilter();
@@ -569,6 +849,7 @@ namespace lab4BD
         {
             LoadDataFromDatabase();
         }
+
         private void SaveToDBButton_Click(object sender, EventArgs e)
         {
             if (gridView.GetRowCount() == 0)
@@ -621,17 +902,49 @@ namespace lab4BD
             List<string> dataFilter = new List<string>();
             List<string> filterValues = new List<string>();
 
+            // Проверяем данные в фильтрах
+            bool validationFailed = false;
+            string errorMessage = "";
+
             for (int i = 0; i < textBoxesFilter.Count; i++)
             {
-                if (!string.IsNullOrEmpty(textBoxesFilter[i].Text))
+                string filterValue = textBoxesFilter[i].Text;
+
+                if (!string.IsNullOrEmpty(filterValue))
                 {
+                    // Проверяем корректность данных для числовых полей в фильтрах
+                    string columnName = nameColumns[i];
+                    if (columnDataTypes.ContainsKey(columnName))
+                    {
+                        string dataType = columnDataTypes[columnName];
+
+                        if (!ValidateNumericInput(filterValue, dataType))
+                        {
+                            validationFailed = true;
+                            errorMessage += $"Фильтр в столбце '{columnName}': ожидается числовое значение\n";
+                            continue; // Пропускаем этот фильтр
+                        }
+                    }
+
                     dataFilter.Add(nameColumns[i]);
-                    filterValues.Add(textBoxesFilter[i].Text);
+                    filterValues.Add(filterValue);
                 }
             }
 
+            if (validationFailed)
+            {
+                MessageBox.Show($"Ошибка проверки данных в фильтрах:\n{errorMessage}",
+                               "Некорректные данные в фильтрах",
+                               MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            int visibleRows = 0;
+
             foreach (DataGridViewRow row in gridView.dataGrid.Rows)
             {
+                if (row.IsNewRow) continue; // Пропускаем новую строку
+
                 bool shouldShow = true;
 
                 for (int count = 0; count < dataFilter.Count; count++)
@@ -656,8 +969,20 @@ namespace lab4BD
                 }
 
                 row.Visible = shouldShow;
+                if (shouldShow) visibleRows++;
             }
-            MessageBox.Show("Фильтр применен");
+
+            // Проверяем, остались ли видимые строки после фильтрации
+            if (visibleRows == 0)
+            {
+                MessageBox.Show("После применения фильтра таблица пуста. Попробуйте изменить условия фильтрации.",
+                               "Результаты фильтрации",
+                               MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else
+            {
+                MessageBox.Show($"Фильтр применен. Найдено записей: {visibleRows}");
+            }
         }
 
         public void insert(string[] rowData)
