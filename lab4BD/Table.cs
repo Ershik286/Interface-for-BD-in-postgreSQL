@@ -1,4 +1,4 @@
-﻿using System.Windows.Forms;
+using System.Windows.Forms;
 using Npgsql;
 using System.Data;
 using System.IO;
@@ -539,7 +539,6 @@ namespace lab4BD
             }
         }
 
-        // Проверка корректности данных для числовых полей
         private bool ValidateNumericInput(string value, string dataType)
         {
             if (string.IsNullOrWhiteSpace(value))
@@ -700,7 +699,6 @@ namespace lab4BD
                 parentForm.Controls.Add(textBoxAppend);
             }
 
-            // ... остальной код CreateInterface без изменений ...
             saveButton = new Button();
             saveButton.Size = new Size(120, 30);
             saveButton.Text = "Применить фильтр";
@@ -769,7 +767,6 @@ namespace lab4BD
             reloadButton.Click += (s, e) => ReloadTableData();
         }
 
-        // ... остальные методы Table без изменений ...
         private void DeleteRow_Click(object sender, EventArgs e)
         {
             gridView.deleteRows();
@@ -1010,7 +1007,7 @@ namespace lab4BD
             loadFromDBButton.Visible = false;
             saveToDBButton.Visible = false;
             reloadButton.Visible = false;
-
+            
             foreach (var label in labelsSettings) label.Visible = false;
             foreach (var label in labelsAppend) label.Visible = false;
             foreach (var textBox in textBoxesFilter) textBox.Visible = false;
