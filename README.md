@@ -8,6 +8,7 @@
 Реализован функционал сохранения данных о пользователе, дабы пользователь не вводил данные каждый раз.
 
 Общий интерфейс:
+
 <img width="839" height="345" alt="image" src="https://github.com/user-attachments/assets/a2e579f1-755a-4b4d-8d39-7e6e02eff408" />
 
 <img width="146" height="89" alt="image" src="https://github.com/user-attachments/assets/e75fd813-e27f-4f9a-8600-aa1659a39cf3" />
