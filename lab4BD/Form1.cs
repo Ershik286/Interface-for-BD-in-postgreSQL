@@ -15,30 +15,55 @@ namespace lab4BD
         private List<Table> tables = new List<Table>();
         private MenuStrip mainMenu;
 
-        public Form1()
-        {
-            InitializeComponent();
-            this.Size = new Size(1700, 700);
-            this.Text = $"База данных: {Program.DatabaseName}@ {Program.Server}:{Program.Port}";
+        public Form1() {
+            InitializeComponent(); // Вызывается только ОДИН раз!
+            InitializeForm();
+        }
 
+        private void InitializeForm() {
+            this.Size = new Size(1700, 700);
+            UpdateFormTitle();
             ConnectAndLoadDatabase();
         }
 
-        private async void ConnectAndLoadDatabase()
-        {
-            try
-            {
+        public void UpdateFormTitle() {
+            this.Text = $"База данных: {Program.DatabaseName}@{Program.Server}:{Program.Port} | Пользователь: {Program.UserLogin}";
+        }
+
+        public void RefreshDatabaseConnection() {
+            UpdateFormTitle();
+            ClearExistingControls();
+            ConnectAndLoadDatabase();
+        }
+
+        private void ClearExistingControls() {
+            foreach (Control control in this.Controls) {
+                if (control is StatusStrip) {
+                    this.Controls.Remove(control);
+                    control.Dispose();
+                    break;
+                }
+            }
+            if (mainMenu != null) {
+                this.Controls.Remove(mainMenu);
+                mainMenu.Dispose();
+                mainMenu = null;
+            }
+            foreach (Table table in tables) {
+                table.Hide();
+                table.Dispose();
+            }
+            tables.Clear();
+        }
+
+        private async void ConnectAndLoadDatabase() {
+            try {
                 ShowConnectionInfo();
-
                 await ConnectToDatabase();
-
                 LoadTablesFromDatabase();
                 CreateMenuStrip();
-
-                this.Invalidate();
             }
-            catch (Exception ex)
-            {
+            catch (Exception ex) {
                 MessageBox.Show($"Ошибка подключения к БД: {ex.Message}\n\n" +
                                $"Проверьте правильность введенных данных:\n" +
                                $"Сервер: {Program.Server}:{Program.Port}\n" +
@@ -47,26 +72,27 @@ namespace lab4BD
                                "Ошибка подключения",
                                MessageBoxButtons.OK, MessageBoxIcon.Error);
 
-                // Предлагаем изменить настройки подключения
                 var result = MessageBox.Show("Хотите изменить настройки подключения?",
                                            "Настройки подключения",
                                            MessageBoxButtons.YesNo,
                                            MessageBoxIcon.Question);
 
-                if (result == DialogResult.Yes)
-                {
+                if (result == DialogResult.Yes) {
                     ResetConnectionSettings();
                 }
-                else
-                {
+                else {
                     CreateTestTable();
                     CreateMenuStrip();
                 }
             }
         }
 
-        private void ShowConnectionInfo()
-        {
+        private void ShowConnectionInfo() {
+            foreach (Control control in this.Controls) {
+                if (control is StatusStrip)
+                    return;
+            }
+
             ToolStripStatusLabel statusLabel = new ToolStripStatusLabel();
             statusLabel.Text = $"Подключение: {Program.Server}:{Program.Port} | БД: {Program.DatabaseName} | Пользователь: {Program.UserLogin}";
 
@@ -80,13 +106,10 @@ namespace lab4BD
         {
             try
             {
-                // Удаляем файл настроек
                 if (File.Exists(Program.pathFirstRun))
                 {
                     File.Delete(Program.pathFirstRun);
                 }
-
-                // Перезапускаем приложение
                 Application.Restart();
             }
             catch (Exception ex)
@@ -103,7 +126,6 @@ namespace lab4BD
                 using (var connection = new NpgsqlConnection(connectionString))
                 {
                     await connection.OpenAsync();
-                    // Проверяем подключение
                     using (var command = new NpgsqlCommand("SELECT 1", connection))
                     {
                         await command.ExecuteScalarAsync();
@@ -233,7 +255,7 @@ namespace lab4BD
 
             refreshItem.Click += (s, e) => RefreshTables();
             exitItem.Click += (s, e) => Application.Exit();
-            newDB.Click += (s, e) => Program.inputKeyDB();
+            newDB.Click += (s, e) => Program.InputKeyDB(this);
 
             fileMenu.DropDownItems.AddRange(new ToolStripItem[] {
                 refreshItem, new ToolStripSeparator(), exitItem, new ToolStripSeparator(), newDB
