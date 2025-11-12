@@ -12,7 +12,6 @@ namespace lab4BD
     public partial class Form1 : Form
     {
         public string connectionString => Program.GetConnectionString();
-
         private List<Table> tables = new List<Table>();
         private MenuStrip mainMenu;
 
@@ -68,7 +67,6 @@ namespace lab4BD
 
         private void ShowConnectionInfo()
         {
-            // Можно добавить статус бар или лейбл для отображения информации о подключении
             ToolStripStatusLabel statusLabel = new ToolStripStatusLabel();
             statusLabel.Text = $"Подключение: {Program.Server}:{Program.Port} | БД: {Program.DatabaseName} | Пользователь: {Program.UserLogin}";
 
@@ -231,12 +229,14 @@ namespace lab4BD
             ToolStripMenuItem fileMenu = new ToolStripMenuItem("Файл");
             ToolStripMenuItem refreshItem = new ToolStripMenuItem("Обновить");
             ToolStripMenuItem exitItem = new ToolStripMenuItem("Выход");
+            ToolStripMenuItem newDB = new ToolStripMenuItem("Войти в новую БД");
 
             refreshItem.Click += (s, e) => RefreshTables();
             exitItem.Click += (s, e) => Application.Exit();
+            newDB.Click += (s, e) => Program.inputKeyDB();
 
             fileMenu.DropDownItems.AddRange(new ToolStripItem[] {
-                refreshItem, new ToolStripSeparator(), exitItem
+                refreshItem, new ToolStripSeparator(), exitItem, new ToolStripSeparator(), newDB
             });
 
             // Пункт меню "Таблицы" - используем переведенные названия
