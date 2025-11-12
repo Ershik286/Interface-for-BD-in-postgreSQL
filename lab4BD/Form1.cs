@@ -16,7 +16,7 @@ namespace lab4BD
         private MenuStrip mainMenu;
 
         public Form1() {
-            InitializeComponent(); // Вызывается только ОДИН раз!
+            InitializeComponent();
             InitializeForm();
         }
 
@@ -448,3 +448,4 @@ namespace lab4BD
         }
     }
 }
+
