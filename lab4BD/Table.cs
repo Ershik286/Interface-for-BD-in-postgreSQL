@@ -4,6 +4,7 @@ using System.Data;
 using System.IO;
 using System.Text.Json;
 using System.Linq;
+using Microsoft.EntityFrameworkCore.Metadata.Internal;
 
 namespace lab4BD
 {
@@ -41,53 +42,158 @@ namespace lab4BD
             }
         }
 
-        public void AddRows(params string[] values)
-        {
-            if (values.Length != columnCount)
-            {
+        public void AddRows(bool loadFromDB = false, params string[] values) {
+            if (values.Length != columnCount) {
                 throw new ArgumentException($"Ожидается {columnCount} значений, получено {values.Length}");
             }
 
-            dataRows.Add(values);
-            dataGrid.Rows.Add(values);
+            try {
+                if (loadFromDB) {
+                    dataRows.Add(values);
+                    dataGrid.Rows.Add(values);
+                    return;
+                }
+
+                using (var connection = new NpgsqlConnection(parentsTable.parentForm.connectionString)) {
+                    connection.Open();
+
+                    var columnTypes = GetColumnTypes(parentsTable.nameTable, connection);
+
+                    if (CheckForDuplicate(parentsTable.nameTable, values, connection)) {
+                        MessageBox.Show($"Обнаружена дублирующаяся запись. Пропуск строки: {string.Join(", ", values)}",
+                                      "Дублирующаяся запись",
+                                      MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    string insertSql = $"INSERT INTO {parentsTable.nameTable} VALUES (";
+                    for (int col = 0; col < columnCount; col++) {
+                        string value = values[col] ?? "";
+                        value = FormatValueForSql(value, columnTypes[col.ToString()]);
+                        insertSql += value;
+                        if (col < columnCount - 1) insertSql += ", ";
+                    }
+                    insertSql += ")";
+
+                    using (var command = new NpgsqlCommand(insertSql, connection)) {
+                        command.ExecuteNonQuery();
+                    }
+
+                    dataRows.Add(values);
+                    dataGrid.Rows.Add(values);
+
+                    MessageBox.Show("Запись успешно добавлена!", "Успех",
+                                  MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+            catch (Exception ex) {
+                MessageBox.Show($"Ошибка при добавлении записи: {ex.Message}",
+                              "Ошибка",
+                              MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
-        public void deleteRows()
-        {
-            if (dataGrid.SelectedRows.Count == 0)
-            {
+        public void deleteRows() {
+            if (dataGrid.SelectedRows.Count == 0) {
                 MessageBox.Show("Выберите строки для удаления");
                 return;
             }
 
-            try
-            {
-                List<int> rowIndices = new List<int>();
-                foreach (DataGridViewRow row in dataGrid.SelectedRows)
-                {
-                    if (!row.IsNewRow)
-                    {
-                        rowIndices.Add(row.Index);
+            var result = MessageBox.Show($"Вы уверены, что хотите удалить {dataGrid.SelectedRows.Count} строк из БД?",
+                                       "Подтверждение удаления",
+                                       MessageBoxButtons.YesNo,
+                                       MessageBoxIcon.Question);
+
+            if (result != DialogResult.Yes)
+                return;
+
+            try {
+                using (var connection = new NpgsqlConnection(parentsTable.parentForm.connectionString)) {
+                    connection.Open();
+
+                    string primaryKeyColumnName = GetPrimaryKeyColumn(parentsTable.nameTable, connection);
+                    var columnTypes = GetColumnTypes(parentsTable.nameTable, connection);
+
+                    int deletedCount = 0;
+                    List<int> rowIndices = new List<int>();
+
+                    foreach (DataGridViewRow row in dataGrid.SelectedRows) {
+                        if (!row.IsNewRow) {
+                            rowIndices.Add(row.Index);
+                        }
+                    }
+
+                    rowIndices.Sort((a, b) => b.CompareTo(a));
+
+                    foreach (int rowIndex in rowIndices) {
+                        if (rowIndex < dataGrid.Rows.Count && rowIndex < dataRows.Count) {
+                            string[] rowData = dataRows[rowIndex];
+
+                            if (DeleteRowFromDatabase(parentsTable.nameTable, primaryKeyColumnName, rowData, connection, columnTypes)) {
+                                dataGrid.Rows.RemoveAt(rowIndex);
+                                dataRows.RemoveAt(rowIndex);
+                                deletedCount++;
+                            }
+                        }
+                    }
+
+                    if (deletedCount > 0) {
+                        MessageBox.Show($"Удалено {deletedCount} строк из БД.", "Успех",
+                                       MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    else {
+                        MessageBox.Show("Не удалось удалить строки из БД.", "Предупреждение",
+                                       MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 }
-
-                rowIndices.Sort((a, b) => b.CompareTo(a));
-
-                foreach (int rowIndex in rowIndices)
-                {
-                    if (rowIndex < dataGrid.Rows.Count && rowIndex < dataRows.Count)
-                    {
-                        dataGrid.Rows.RemoveAt(rowIndex);
-                        dataRows.RemoveAt(rowIndex);
-                    }
-                }
-
-                MessageBox.Show($"Удалено {rowIndices.Count} строк из интерфейса.");
             }
-            catch (Exception ex)
-            {
+            catch (Exception ex) {
                 MessageBox.Show($"Ошибка при удалении строк: {ex.Message}", "Ошибка",
                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private bool DeleteRowFromDatabase(string tableName, string primaryKeyColumn, string[] rowData, NpgsqlConnection connection, Dictionary<string, string> columnTypes) {
+            try {
+                int primaryKeyIndex = -1;
+                var allColumnTypes = GetColumnTypes(tableName, connection);
+
+                for (int i = 0; i < columnCount; i++) {
+                    string columnName = dataGrid.Columns[i].Name;
+                    if (columnName.Equals(primaryKeyColumn, StringComparison.OrdinalIgnoreCase)) {
+                        primaryKeyIndex = i;
+                        break;
+                    }
+                }
+
+                if (primaryKeyIndex == -1) {
+                    primaryKeyIndex = 0;
+                }
+
+                string primaryKeyValue = rowData[primaryKeyIndex] ?? "";
+
+                if (string.IsNullOrEmpty(primaryKeyValue)) {
+                    MessageBox.Show("Не удалось определить значение первичного ключа для удаления", "Ошибка",
+                                  MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return false;
+                }
+
+                string primaryKeyType = columnTypes.ContainsKey(primaryKeyColumn) ?
+                                      columnTypes[primaryKeyColumn] : "text";
+
+                string formattedValue = FormatValueForSql(primaryKeyValue, primaryKeyType);
+
+                string deleteSql = $"DELETE FROM {tableName} WHERE {primaryKeyColumn} = {formattedValue}";
+
+                using (var command = new NpgsqlCommand(deleteSql, connection)) {
+                    int affectedRows = command.ExecuteNonQuery();
+                    return affectedRows > 0;
+                }
+            }
+            catch (Exception ex) {
+                MessageBox.Show($"Ошибка при удалении строки из БД: {ex.Message}", "Ошибка",
+                              MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
             }
         }
 
@@ -113,7 +219,7 @@ namespace lab4BD
                             {
                                 rowData[i] = reader.IsDBNull(i) ? "" : reader.GetValue(i).ToString();
                             }
-                            AddRows(rowData);
+                            AddRows(true, rowData);
                         }
                     }
                 }
@@ -124,92 +230,6 @@ namespace lab4BD
             }
         }
 
-        public void SaveDataToDatabase(string tableName, string connectionString)
-        {
-            if (dataRows.Count == 0)
-            {
-                MessageBox.Show("Нет данных для сохранения. Таблица пустая.", "Предупреждение",
-                               MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            try
-            {
-                using (var connection = new NpgsqlConnection(connectionString))
-                {
-                    connection.Open();
-
-                    var columnTypes = GetColumnTypes(tableName, connection);
-
-                    bool tableHasData = CheckIfTableHasData(tableName, connection);
-
-                    if (tableHasData)
-                    {
-                        var result = MessageBox.Show("В таблице БД уже есть данные. Хотите их перезаписать?",
-                                                   "Подтверждение",
-                                                   MessageBoxButtons.YesNo,
-                                                   MessageBoxIcon.Question);
-
-                        if (result != DialogResult.Yes)
-                            return;
-                    }
-
-                    string clearSql = $"DELETE FROM {tableName}";
-                    using (var command = new NpgsqlCommand(clearSql, connection))
-                    {
-                        command.ExecuteNonQuery();
-                    }
-
-                    int savedRows = 0;
-                    foreach (var rowData in dataRows)
-                    {
-                        if (!IsRowEmpty(rowData))
-                        {
-                            // Проверка на дубликаты перед сохранением
-                            if (CheckForDuplicate(tableName, rowData, connection))
-                            {
-                                MessageBox.Show($"Обнаружена дублирующаяся запись. Пропуск строки: {string.Join(", ", rowData)}",
-                                              "Дублирующаяся запись",
-                                              MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                                continue;
-                            }
-
-                            string insertSql = $"INSERT INTO {tableName} VALUES (";
-                            for (int col = 0; col < columnCount; col++)
-                            {
-                                string value = rowData[col] ?? "";
-
-                                value = FormatValueForSql(value, columnTypes[col.ToString()]);
-
-                                insertSql += value;
-                                if (col < columnCount - 1) insertSql += ", ";
-                            }
-                            insertSql += ")";
-
-                            using (var command = new NpgsqlCommand(insertSql, connection))
-                            {
-                                command.ExecuteNonQuery();
-                                savedRows++;
-                            }
-                        }
-                    }
-
-                    MessageBox.Show($"Успешно сохранено {savedRows} строк в БД", "Сохранение",
-                                   MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Ошибка сохранения данных: {ex.Message}\n\n" +
-                               $"Данные в БД не были изменены.",
-                               "Ошибка сохранения",
-                               MessageBoxButtons.OK, MessageBoxIcon.Error);
-
-                parentsTable.ReloadTableData();
-            }
-        }
-
-        // Проверка на дубликаты
         private bool CheckForDuplicate(string tableName, string[] rowData, NpgsqlConnection connection)
         {
             try
@@ -266,8 +286,26 @@ namespace lab4BD
             return columnNames;
         }
 
-        private Dictionary<string, string> GetColumnTypes(string tableName, NpgsqlConnection connection)
-        {
+        private string GetPrimaryKeyColumn(string tableName, NpgsqlConnection connection) {
+            try {
+                string sql = $@"
+            SELECT column_name 
+            FROM information_schema.key_column_usage 
+            WHERE table_name = '{tableName}' 
+            AND constraint_name LIKE '%pkey%'
+            LIMIT 1";
+
+                using (var command = new NpgsqlCommand(sql, connection)) {
+                    var result = command.ExecuteScalar();
+                    return result?.ToString() ?? "id"; // По умолчанию используем 'id'
+                }
+            }
+            catch {
+                return "id"; // Fallback на стандартный первичный ключ
+            }
+        }
+
+        private Dictionary<string, string> GetColumnTypes(string tableName, NpgsqlConnection connection) {
             var columnTypes = new Dictionary<string, string>();
 
             string sql = $@"
@@ -277,14 +315,14 @@ namespace lab4BD
                 ORDER BY ordinal_position";
 
             using (var command = new NpgsqlCommand(sql, connection))
-            using (var reader = command.ExecuteReader())
-            {
+            using (var reader = command.ExecuteReader()) {
                 int index = 0;
-                while (reader.Read())
-                {
+                while (reader.Read()) {
                     string columnName = reader.GetString(0);
                     string dataType = reader.GetString(1);
                     columnTypes[index.ToString()] = dataType;
+                    // Также сохраняем по имени колонки для удобства
+                    columnTypes[columnName] = dataType;
                     index++;
                 }
             }
@@ -370,7 +408,7 @@ namespace lab4BD
         private Button insertRow;
         private Button saveButton;
         private Button loadFromDBButton;
-        private Button saveToDBButton;
+        //private Button saveToDBButton;
         private Button reloadButton;
 
         private List<Label> labelsAppend;
@@ -624,6 +662,16 @@ namespace lab4BD
                 MessageBox.Show($"Ошибка создания таблицы в БД: {ex.Message}");
             }
         }
+        public void insert(string[] rowData) {
+            bool hasData = false;
+
+            for (int i = 0; i < column; i++) {
+                rowData[i] = textBoxesAppend[i].Text;
+                if (!string.IsNullOrWhiteSpace(rowData[i]))
+                    hasData = true;
+                textBoxesAppend[i].Clear();
+            }
+        }
 
         public void CreateInterface()
         {
@@ -735,19 +783,19 @@ namespace lab4BD
             loadFromDBButton.FlatStyle = FlatStyle.Flat;
             parentForm.Controls.Add(loadFromDBButton);
 
-            saveToDBButton = new Button();
-            saveToDBButton.Size = new Size(180, 30);
-            saveToDBButton.Text = "Сохранить в БД";
-            saveToDBButton.Location = new Point(saveButtonX + 300, 450);
-            saveToDBButton.Font = new Font("Arial", 9);
-            saveToDBButton.BackColor = Color.LightGreen;
-            saveToDBButton.FlatStyle = FlatStyle.Flat;
-            parentForm.Controls.Add(saveToDBButton);
+            //saveToDBButton = new Button();
+            //saveToDBButton.Size = new Size(180, 30);
+            //saveToDBButton.Text = "Сохранить в БД";
+            //saveToDBButton.Location = new Point(saveButtonX + 300, 450);
+            //saveToDBButton.Font = new Font("Arial", 9);
+            //saveToDBButton.BackColor = Color.LightGreen;
+            //saveToDBButton.FlatStyle = FlatStyle.Flat;
+            //parentForm.Controls.Add(saveToDBButton);
 
             reloadButton = new Button();
             reloadButton.Size = new Size(180, 30);
             reloadButton.Text = "Перезагрузить";
-            reloadButton.Location = new Point(saveButtonX + 300, 500);
+            reloadButton.Location = new Point(saveButtonX + 500, startY - 20);
             reloadButton.Font = new Font("Arial", 9);
             reloadButton.BackColor = Color.LightYellow;
             reloadButton.FlatStyle = FlatStyle.Flat;
@@ -763,7 +811,7 @@ namespace lab4BD
             insertRow.Click += InsertRow_Click;
             saveButton.Click += SaveButton_Click;
             loadFromDBButton.Click += LoadFromDBButton_Click;
-            saveToDBButton.Click += SaveToDBButton_Click;
+            //saveToDBButton.Click += SaveToDBButton_Click;
             reloadButton.Click += (s, e) => ReloadTableData();
         }
 
@@ -778,7 +826,6 @@ namespace lab4BD
             bool hasData = false;
             bool validationFailed = false;
             string errorMessage = "";
-
             // Проверяем данные перед добавлением
             for (int i = 0; i < column; i++)
             {
@@ -788,13 +835,11 @@ namespace lab4BD
                 if (!string.IsNullOrWhiteSpace(inputValue))
                     hasData = true;
 
-                // Получаем тип данных для текущего столбца
                 string columnName = nameColumns[i];
                 if (columnDataTypes.ContainsKey(columnName))
                 {
                     string dataType = columnDataTypes[columnName];
 
-                    // Проверяем корректность данных для числовых полей
                     if (!ValidateNumericInput(inputValue, dataType))
                     {
                         validationFailed = true;
@@ -817,25 +862,14 @@ namespace lab4BD
                 return;
             }
 
-            // Проверяем на дубликаты в таблице
-            if (CheckForDuplicateInGrid(rowData))
-            {
-                MessageBox.Show("Такая запись уже существует в таблице!",
-                               "Дублирующаяся запись",
-                               MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
             // Если все проверки пройдены, добавляем запись
-            gridView.AddRows(rowData);
+            gridView.AddRows(false, rowData);
 
             // Очищаем поля ввода после успешного добавления
             for (int i = 0; i < column; i++)
             {
                 textBoxesAppend[i].Clear();
             }
-
-            MessageBox.Show("Запись добавлена в интерфейс.");
         }
         private void SaveButton_Click(object sender, EventArgs e)
         {
@@ -847,17 +881,17 @@ namespace lab4BD
             LoadDataFromDatabase();
         }
 
-        private void SaveToDBButton_Click(object sender, EventArgs e)
-        {
-            if (gridView.GetRowCount() == 0)
-            {
-                MessageBox.Show("Нет данных для сохранения. Таблица пустая.", "Предупреждение",
-                               MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
+        //private void SaveToDBButton_Click(object sender, EventArgs e)
+        //{
+        //    if (gridView.GetRowCount() == 0)
+        //    {
+        //        MessageBox.Show("Нет данных для сохранения. Таблица пустая.", "Предупреждение",
+        //                       MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        //        return;
+        //    }
 
-            gridView.SaveDataToDatabase(nameTable, parentForm.connectionString);
-        }
+        //    gridView.SaveDataToDatabase(nameTable, parentForm.connectionString);
+        //}
 
         private void LoadDataFromDatabase()
         {
@@ -982,19 +1016,6 @@ namespace lab4BD
             }
         }
 
-        public void insert(string[] rowData)
-        {
-            bool hasData = false;
-
-            for (int i = 0; i < column; i++)
-            {
-                rowData[i] = textBoxesAppend[i].Text;
-                if (!string.IsNullOrWhiteSpace(rowData[i]))
-                    hasData = true;
-                textBoxesAppend[i].Clear();
-            }
-        }
-
         public void Hide()
         {
             gridView.dataGrid.Visible = false;
@@ -1005,7 +1026,7 @@ namespace lab4BD
             insertRow.Visible = false;
             saveButton.Visible = false;
             loadFromDBButton.Visible = false;
-            saveToDBButton.Visible = false;
+            //saveToDBButton.Visible = false;
             reloadButton.Visible = false;
             
             foreach (var label in labelsSettings) label.Visible = false;
@@ -1024,7 +1045,7 @@ namespace lab4BD
             insertRow.Visible = true;
             saveButton.Visible = true;
             loadFromDBButton.Visible = true;
-            saveToDBButton.Visible = true;
+            //saveToDBButton.Visible = true;
             reloadButton.Visible = true;
 
             foreach (var label in labelsSettings) label.Visible = true;
