@@ -16,7 +16,7 @@ namespace lab4BD
         private MenuStrip mainMenu;
 
         public Form1() {
-            InitializeComponent();
+            InitializeComponent(); // Вызывается только ОДИН раз!
             InitializeForm();
         }
 
@@ -81,8 +81,9 @@ namespace lab4BD
                     ResetConnectionSettings();
                 }
                 else {
-                    CreateTestTable();
-                    CreateMenuStrip();
+                    this.Close();
+                    //CreateTestTable();
+                    //CreateMenuStrip();
                 }
             }
         }
@@ -137,6 +138,7 @@ namespace lab4BD
                 throw new Exception($"Не удалось подключиться к базе данных: {ex.Message}");
             }
         }
+
 
         private void LoadTablesFromDatabase()
         {
@@ -322,6 +324,7 @@ namespace lab4BD
             table.Show();
         }
 
+
         private async void RefreshTables()
         {
             try
@@ -448,4 +451,3 @@ namespace lab4BD
         }
     }
 }
-
